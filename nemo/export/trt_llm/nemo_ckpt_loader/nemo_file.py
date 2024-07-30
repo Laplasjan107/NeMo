@@ -84,25 +84,49 @@ def load_sharded_metadata_torch_dist(checkpoint_dir: Union[Path, TarPath], torch
                 state_dict[k] = v.numpy()
     return state_dict
 
+def load_sharded_pickle_extra_state_scale(dir):
+    scales = []
+
+    i = 0
+    while pt_file_list := list(dir.glob(f'shard_{i}_*.pt')):
+        pt_file = pt_file_list[0]
+        checkpoint = torch.load(pt_file)
+        checkpoint.seek(0)
+        state_dict = torch.load(checkpoint)
+        scale = state_dict['scale_fwd'].cpu()
+        scales.append(scale)
+        i += 1
+
+    all_scales = torch.stack(scales)
+    return all_scales
+
 
 def load_sharded_metadata_zarr(checkpoint_dir: Union[Path, TarPath], torch_tensor=True):
     sharded_state_dict = {}
     for subdir in checkpoint_dir.iterdir():
-        if not subdir.is_dir() or not (subdir / '.zarray').exists():
+        if not subdir.is_dir():
             continue
+
         key = subdir.name
+        if list(subdir.glob('shard_0_*.pt')):
+            key = key + '.scale_fwd'
+            scales = load_sharded_pickle_extra_state_scale(subdir)
+            sharded_state_dict[key] = scales
+        elif (subdir / '.zarray').exists():
+            zstore = ZarrPathStore(subdir)
+            arr = zarr.open(zstore, 'r')
 
-        zstore = ZarrPathStore(subdir)
-        arr = zarr.open(zstore, 'r')
-
-        if torch_tensor:
-            # sharded_state_dict[key] = torch.from_numpy(arr[:].astype("float32")).to(dtype=torch.bfloat16)
-            if arr.dtype.name == "bfloat16":
-                sharded_state_dict[key] = torch.from_numpy(arr[:].view(np.int16)).view(torch.bfloat16)
+            if torch_tensor:
+                # sharded_state_dict[key] = torch.from_numpy(arr[:].astype("float32")).to(dtype=torch.bfloat16)
+                if arr.dtype.name == "bfloat16":
+                    sharded_state_dict[key] = torch.from_numpy(arr[:].view(np.int16)).view(torch.bfloat16)
+                else:
+                    from tensorrt_llm._utils import str_dtype_to_torch
+                    sharded_state_dict[key] = torch.from_numpy(arr[:]).view(str_dtype_to_torch(arr.dtype.name))
             else:
-                sharded_state_dict[key] = torch.from_numpy(arr[:])
+                sharded_state_dict[key] = arr[:]
         else:
-            sharded_state_dict[key] = arr[:]
+            continue
 
     return sharded_state_dict
 
