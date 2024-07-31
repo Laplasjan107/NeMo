@@ -187,6 +187,7 @@ def convert_model_to_trt_llm_ckpt(
 
     starmap_args = []
     for key, val in model.items():
+            print(key, val.shape)
 #        if "_extra_state" not in key:
             if len(val.size()) == 1:
                 starmap_args.append(
